@@ -1,12 +1,19 @@
 licenses(["restricted"])  # MPL2, portions GPL v3, LGPL v3, BSD-like
 
 load("/tensorflow/tensorflow", "if_cuda")
+load("/third_party/gpus/cuda/cuda", "if_cuda_armhf")
 
 package(default_visibility = ["//visibility:public"])
 
 config_setting(
     name = "cuda_crosstool_condition",
     values = {"crosstool_top": "//third_party/gpus/crosstool"},
+    visibility = ["//visibility:public"],
+)
+
+config_setting(
+    name = "cuda_cpu_armhf_condition",
+    values = {"cpu" : "armhf"},
     visibility = ["//visibility:public"],
 )
 
@@ -38,9 +45,7 @@ cc_library(
 
 cc_library(
     name = "cudart_static",
-    srcs = [
-        "lib64/libcudart_static.a",
-    ],
+    srcs = if_cuda_armhf(["lib-armhf/libcudart_static.a"], ["lib64/libcudart_static.a"]),
     includes = ["include/"],
     linkopts = [
         "-ldl",
@@ -52,12 +57,8 @@ cc_library(
 
 cc_library(
     name = "cudart",
-    srcs = [
-        "lib64/libcudart.so.7.0",
-    ],
-    data = [
-        "lib64/libcudart.so.7.0",
-    ],
+    srcs = if_cuda_armhf(["lib-armhf/libcudart.so.7.0"], ["lib64/libcudart.so.7.0"]),
+    data = if_cuda_armhf(["lib-armhf/libcudart.so.7.0"], ["lib64/libcudart.so.7.0"]), 
     includes = ["include/"],
     visibility = ["//visibility:public"],
     linkstatic = 1,
@@ -65,12 +66,8 @@ cc_library(
 
 cc_library(
     name = "cublas",
-    srcs = [
-        "lib64/libcublas.so.7.0",
-    ],
-    data = [
-        "lib64/libcublas.so.7.0",
-    ],
+    srcs = if_cuda_armhf(["lib-armhf/libcublas.so.7.0"], ["lib64/libcublas.so.7.0"]),
+    data = if_cuda_armhf(["lib-armhf/libcublas.so.7.0"], ["lib64/libcublas.so.7.0"]), 
     includes = ["include/"],
     visibility = ["//visibility:public"],
     linkstatic = 1,
@@ -78,12 +75,8 @@ cc_library(
 
 cc_library(
     name = "cudnn",
-    srcs = [
-        "lib64/libcudnn.so.6.5",
-    ],
-    data = [
-        "lib64/libcudnn.so.6.5",
-    ],
+    srcs = if_cuda_armhf(["lib-armhf/libcudnn.so.6.5"], ["lib64/libcudnn.so.6.5"]),
+    data = if_cuda_armhf(["lib-armhf/libcudnn.so.6.5"], ["lib64/libcudnn.so.6.5"]), 
     includes = ["include/"],
     visibility = ["//visibility:public"],
     linkstatic = 1,

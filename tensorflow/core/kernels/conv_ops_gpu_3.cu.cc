@@ -252,8 +252,11 @@ struct NCHWToNHWC<GPUDevice, T> {
 
 template struct functor::ShuffleAndReverse<GPUDevice, float, 4, int>;
 
+/* On ARMv7 Eigen::DenseIndex is typedefed to int */
+#ifndef __arm__
 template struct functor::ShuffleAndReverse<GPUDevice, float, 4,
                                            Eigen::DenseIndex>;
+#endif /*__arm__*/
 
 template struct functor::TransformFilter<GPUDevice, float, int>;
 
