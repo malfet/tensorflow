@@ -865,6 +865,11 @@ void *CUDAExecutor::CudaContextHack() { return context_; }
 
 CUcontext CUDAExecutor::cuda_context() { return context_; }
 
+#ifdef __arm__
+static int TryToReadNumaNode(const string &pci_bus_id, int device_ordinal) {
+  return 0;
+}
+#else
 // Attemps to read the NUMA node corresponding to the GPU device's PCI bus out
 // of SysFS. Returns -1 if it cannot.
 //
@@ -914,6 +919,7 @@ static int TryToReadNumaNode(const string &pci_bus_id, int device_ordinal) {
 
   return kUnknownNumaNode;
 }
+#endif /*__arm__*/
 
 // Set of compute capability specific device parameters that cannot be
 // queried from the driver API.  These values instead are baked into a
