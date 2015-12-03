@@ -26,8 +26,6 @@ import numpy as np
 from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
-from tensorflow.python.kernel_tests import gradient_checker as gc
-
 
 def _AsLong(array):
   """Casts arrays elements to long type. Used to convert from numpy tf."""
@@ -145,7 +143,7 @@ def _EmbeddingResult(params, id_vals, num_shards, weight_vals=None):
   for ids, wts in zip(id_vals, weight_vals):
     val_aggr = None
     wt_aggr = None
-    if isinstance(ids, int):
+    if isinstance(ids, tf.compat.integral_types):
       ids = [ids]
       wts = [wts]
     for i, wt_val in zip(ids, wts):
@@ -225,8 +223,11 @@ class EmbeddingLookupTest(tf.test.TestCase):
         x_name = [_PName(i) for i in range(num_shards)]
         x_init_value = [params[x_n + ":0"] for x_n in x_name]
         x_shape = [i.shape for i in x_init_value]
-        err = gc.ComputeGradientError(x, x_shape, y, y_shape,
-                                      x_init_value=x_init_value)
+        err = tf.test.compute_gradient_error(x,
+                                             x_shape,
+                                             y,
+                                             y_shape,
+                                             x_init_value=x_init_value)
       self.assertLess(err, 1e-4)
 
   def testGradientsEmbeddingLookupWithComputedParams(self):
@@ -246,8 +247,11 @@ class EmbeddingLookupTest(tf.test.TestCase):
         x_name = [_PName(i) for i in range(num_shards)]
         x_init_value = [params[x_n + ":0"] for x_n in x_name]
         x_shape = [i.shape for i in x_init_value]
-        err = gc.ComputeGradientError(x, x_shape, y, y_shape,
-                                      x_init_value=x_init_value)
+        err = tf.test.compute_gradient_error(x,
+                                             x_shape,
+                                             y,
+                                             y_shape,
+                                             x_init_value=x_init_value)
       self.assertLess(err, 1e-3)
 
   def testConstructionNonSharded(self):
@@ -381,8 +385,11 @@ class EmbeddingLookupSparseTest(tf.test.TestCase):
         x_init_value = [params[x_n + ":0"] for x_n in x_name]
         x_shape = [i.shape for i in x_init_value]
         y_shape = [batch_size] + list(params[_PName(0) + ":0"].shape[1:])
-        err = gc.ComputeGradientError(x, x_shape, y, y_shape,
-                                      x_init_value=x_init_value)
+        err = tf.test.compute_gradient_error(x,
+                                             x_shape,
+                                             y,
+                                             y_shape,
+                                             x_init_value=x_init_value)
       self.assertLess(err, 1e-5 if dtype == tf.float64 else 2e-3)
 
 

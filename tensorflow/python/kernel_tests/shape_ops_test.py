@@ -24,8 +24,6 @@ import numpy as np
 
 import tensorflow as tf
 
-from tensorflow.python.kernel_tests import gradient_checker as gc
-
 
 class ShapeOpsTest(tf.test.TestCase):
 
@@ -119,7 +117,7 @@ class ShapeOpsTest(tf.test.TestCase):
                      dtype=tf.float32)
       squeezed = tf.expand_dims(inp, 1)
 
-      err = gc.ComputeGradientError(inp, [4, 2], squeezed, [4, 1, 2])
+      err = tf.test.compute_gradient_error(inp, [4, 2], squeezed, [4, 1, 2])
     self.assertLess(err, 1e-3)
 
   def testExpandDimsScalar(self):
@@ -202,7 +200,7 @@ class ShapeOpsTest(tf.test.TestCase):
       a = tf.reshape(inp, [4, 1, 2])
       squeezed = tf.squeeze(a, [])
 
-      err = gc.ComputeGradientError(a, [4, 1, 2], squeezed, [4, 2])
+      err = tf.test.compute_gradient_error(a, [4, 1, 2], squeezed, [4, 2])
     self.assertLess(err, 1e-3)
 
   def testSqueezeGradientWithSqueezeDims(self):
@@ -211,7 +209,7 @@ class ShapeOpsTest(tf.test.TestCase):
       a = tf.reshape(inp, [4, 1, 2, 1])
       squeezed = tf.squeeze(a, [1])
 
-      err = gc.ComputeGradientError(a, [4, 1, 2, 1], squeezed, [4, 2, 1])
+      err = tf.test.compute_gradient_error(a, [4, 1, 2, 1], squeezed, [4, 2, 1])
     self.assertLess(err, 1e-3)
 
 
@@ -245,12 +243,10 @@ class TileTest(tf.test.TestCase):
         "uint8": (tf.uint8, int),
         "int32": (tf.int32, int),
         "int64": (tf.int64, int),
-        "string": (tf.string, str)
+        bytes: (tf.string, bytes)
     }
-    for dtype_np, v in types_to_test.items():
+    for dtype_np, (dtype_tf, cast) in types_to_test.items():
       with self.test_session():
-        dtype_tf = v[0]
-        cast = v[1]
         inp = np.random.rand(4, 1).astype(dtype_np)
         a = tf.constant([cast(x) for x in inp.ravel(order="C")],
                      shape=[4, 1],
@@ -259,7 +255,7 @@ class TileTest(tf.test.TestCase):
         result = tiled.eval()
       self.assertEqual(result.shape, (4, 4))
       self.assertEqual([4, 4], tiled.get_shape())
-      self.assertTrue((result == np.tile(inp, (1, 4))).all())
+      self.assertAllEqual(result, np.tile(inp, (1, 4)))
 
   def testInvalidDim(self):
     with self.test_session():
@@ -368,8 +364,11 @@ class TileTest(tf.test.TestCase):
                    shape=input_shape, dtype=tf.float64)
       tiled = tf.tile(a, multiples)
       grad_shape = list(np.array(multiples) * np.array(inp.shape))
-      err = gc.ComputeGradientError(a, list(input_shape), tiled, grad_shape,
-                                    x_init_value=inp)
+      err = tf.test.compute_gradient_error(a,
+                                           list(input_shape),
+                                           tiled,
+                                           grad_shape,
+                                           x_init_value=inp)
     print("tile(float) error = ", err)
     self.assertLess(err, 1e-3)
 
@@ -384,7 +383,7 @@ class TileTest(tf.test.TestCase):
       a = tf.constant([float(x) for x in inp.flatten()],
                    shape=[4, 2], dtype=tf.float32)
       tiled = tf.tile(a, [1, 2])
-      err = gc.ComputeGradientError(a, [4, 2], tiled, [4, 4])
+      err = tf.test.compute_gradient_error(a, [4, 2], tiled, [4, 4])
     self.assertLess(err, 1e-3)
 
   def testShapeFunctionEdgeCases(self):

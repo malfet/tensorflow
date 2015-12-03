@@ -65,10 +65,10 @@ import sys
 import tensorflow.python.platform
 import numpy as np
 
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
-from tensorflow.python.framework import types
 from tensorflow.python.ops import common_shapes
 from tensorflow.python.ops import gen_array_ops
 from tensorflow.python.ops import gen_math_ops
@@ -460,9 +460,9 @@ def transpose(a, perm=None, name="transpose"):
                        [3 6]]
 
   # Equivalently
-  tf.transpose(x perm=[0, 1]) ==> [[1 4]
-                                   [2 5]
-                                   [3 6]]
+  tf.transpose(x, perm=[1, 0]) ==> [[1 4]
+                                    [2 5]
+                                    [3 6]]
 
   # 'perm' is more useful for n-dimensional tensors, for n > 2
   # 'x' is   [[[1  2  3]
@@ -502,7 +502,7 @@ def transpose(a, perm=None, name="transpose"):
     return ret
 
 
-def zeros(shape, dtype=types.float32, name=None):
+def zeros(shape, dtype=dtypes.float32, name=None):
   """Creates a tensor with all elements set to zero.
 
   This operation returns a tensor of type `dtype` with shape `shape` and
@@ -528,7 +528,7 @@ def zeros(shape, dtype=types.float32, name=None):
     else:
       shape = ops.convert_to_tensor(shape, name="shape")
       output = fill(shape, constant(0, dtype=dtype), name=name)
-  assert output.dtype.base_dtype == types.as_dtype(dtype).base_dtype
+  assert output.dtype.base_dtype == dtypes.as_dtype(dtype).base_dtype
   return output
 
 
@@ -594,12 +594,12 @@ def ones_like(tensor, dtype=None, name=None):
     return ones(ones_shape, dtype=dtype, name=name)
 
 
-def zeros_initializer(shape, dtype=types.float32):
+def zeros_initializer(shape, dtype=dtypes.float32):
   """An adaptor for zeros() to match the Initializer spec."""
   return zeros(shape, dtype)
 
 
-def ones(shape, dtype=types.float32, name=None):
+def ones(shape, dtype=dtypes.float32, name=None):
   """Creates a tensor with all elements set to 1.
 
   This operation returns a tensor of type `dtype` with shape `shape` and all
@@ -625,7 +625,7 @@ def ones(shape, dtype=types.float32, name=None):
     else:
       shape = ops.convert_to_tensor(shape, name="shape")
       output = fill(shape, constant(1, dtype=dtype), name=name)
-  assert output.dtype.base_dtype == types.as_dtype(dtype).base_dtype
+  assert output.dtype.base_dtype == dtypes.as_dtype(dtype).base_dtype
   return output
 
 
@@ -990,17 +990,22 @@ def _ReverseSequenceShape(op):
     A single-element list containing the shape of the output.
 
   Raises:
-    ValueError: If the input shapes are incompatible.
+    ValueError: If the input shapes are incompatible or seq_dim == batch_dim.
   """
   input_shape = op.inputs[0].get_shape()
   seq_lens_shape = op.inputs[1].get_shape().with_rank(1)
-  batch_size = input_shape[0].merge_with(seq_lens_shape[0])
-  input_shape = tensor_shape.TensorShape([batch_size]).concatenate(
-      input_shape[1:])
   seq_dim = op.get_attr("seq_dim")
+  batch_dim = op.get_attr("batch_dim")
+  if batch_dim >= input_shape.ndims:
+    raise ValueError("batch_dim must be < input.dims() (%d vs %d)" %
+                     (batch_dim, input_shape.ndims))
   if seq_dim >= input_shape.ndims:
     raise ValueError("seq_dim must be < input.dims() (%d vs %d)" %
                      (seq_dim, input_shape.ndims))
+  batch_size = input_shape[batch_dim].merge_with(seq_lens_shape[0])
+  input_shape = tensor_shape.TensorShape([
+      value if ix != batch_dim else batch_size
+      for ix, value in enumerate(input_shape)])
   return [input_shape]
 
 

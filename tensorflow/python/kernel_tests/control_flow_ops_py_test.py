@@ -28,6 +28,7 @@ from six.moves import xrange  # pylint: disable=redefined-builtin
 import tensorflow as tf
 
 from tensorflow.python.ops import control_flow_ops
+from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.ops import gradients
 from tensorflow.python.pywrap_tensorflow import StatusNotOK
 
@@ -974,6 +975,30 @@ class ControlFlowTest(tf.test.TestCase):
       for i in xrange(10):
         self.assertEqual([i], q.dequeue().eval())
 
+  def testWhileStack_1(self):
+    with self.test_session():
+      s = gen_data_flow_ops._stack(tf.int32, stack_name="foo")
+      i = tf.constant(0)
+
+      def c(i):
+        return tf.less(i, 10)
+      def b(i):
+        ni = tf.add(i, 1)
+        ni = control_flow_ops.with_dependencies(
+            [gen_data_flow_ops._stack_push(s, i)], ni)
+        return ni
+      r = control_flow_ops.While(c, b, [i], parallel_iterations=1)
+
+      x = tf.constant(0)
+      def c1(i, _):
+        return tf.greater(i, 0)
+      def b1(i, x):
+        ni = tf.sub(i, 1)
+        nx = x + gen_data_flow_ops._stack_pop(s, tf.int32)
+        return [ni, nx]
+      _, rx = control_flow_ops.While(c1, b1, [r, x], parallel_iterations=1)
+      self.assertEqual(45, rx.eval())
+
   def testFold_1(self):
     with self.test_session():
       elems = tf.constant([1, 2, 3, 4, 5, 6], name="data")
@@ -1066,9 +1091,10 @@ class ControlFlowTest(tf.test.TestCase):
 
       # Use a control dependency to ensure init_variable is run
       # while asking for c
-      real_v = control_flow_ops.with_dependencies(name="real_tensor",
-                                                 output_tensor=v,
-                                                 dependencies=[v.initializer])
+      real_v = control_flow_ops.with_dependencies(
+          name="real_tensor",
+          output_tensor=v.ref(),
+          dependencies=[v.initializer])
       c_val, real_v_val = sess.run([c, real_v])
 
     # Ensure the result of 'real_c' is the same as 'c'
@@ -1234,12 +1260,12 @@ class TupleTest(tf.test.TestCase):
       with self.test_session():
         v1 = tf.Variable([1.0])
         add1 = tf.add(
-            control_flow_ops.with_dependencies([v1.initializer], v1),
+            control_flow_ops.with_dependencies([v1.initializer], v1.ref()),
             2.0)
         v2 = tf.Variable([10.0])
-        add2 = tf.add(control_flow_ops.with_dependencies([v2.initializer],
-                                                               v2),
-                            20.0)
+        add2 = tf.add(
+            control_flow_ops.with_dependencies([v2.initializer], v2.ref()),
+            20.0)
         t1, _, t2 = control_flow_ops.tuple([add1, None, add2])
 
         # v1 is not initialized.
@@ -1266,14 +1292,14 @@ class TupleTest(tf.test.TestCase):
             np.array([[0.0, 1.0], [10.0, 11.0], [20.0, 21.0]]).astype(
                 np.float32))
         v1_at_1 = tf.IndexedSlices(
-            control_flow_ops.with_dependencies([v1.initializer], v1),
+            control_flow_ops.with_dependencies([v1.initializer], v1.ref()),
             tf.constant([1]))
 
         v2 = tf.Variable(
             np.array([[0.1, 1.1], [10.1, 11.1], [20.1, 21.1]]).astype(
                 np.float32))
         v2_at_1 = tf.IndexedSlices(
-            control_flow_ops.with_dependencies([v2.initializer], v2),
+            control_flow_ops.with_dependencies([v2.initializer], v2.ref()),
             tf.constant([1]))
 
         st1, st2 = control_flow_ops.tuple([v1_at_1, v2_at_1])

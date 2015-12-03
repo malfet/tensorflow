@@ -28,14 +28,17 @@ import tensorflow as tf
 
 """
 
+import traceback
+
 try:
+  # pylint: disable=g-import-not-at-top
   import tensorflow.python.platform
   from tensorflow.core.framework.graph_pb2 import *
-except ImportError as e:
-  msg = """Error importing tensorflow: you should not try to import
-  tensorflow from its source directory; please exit the tensorflow source tree,
-  and relaunch your python interpreter from there.
-  Original ImportError: %s""" % str(e)
+except ImportError:
+  msg = """%s\n\nError importing tensorflow.  Unless you are using bazel,
+you should not try to import tensorflow from its source directory;
+please exit the tensorflow source tree, and relaunch your python interpreter
+from there.""" % traceback.format_exc()
   raise ImportError(msg)
 
 from tensorflow.core.framework.summary_pb2 import *
@@ -51,10 +54,11 @@ from tensorflow.python.client.client_lib import *
 # Ops
 from tensorflow.python.ops.standard_ops import *
 
-# Bring nn, image_ops, user_ops as a subpackages
+# Bring nn, image_ops, user_ops, compat as a subpackages
 from tensorflow.python.ops import nn
 from tensorflow.python.ops import image_ops as image
 from tensorflow.python.user_ops import user_ops
+from tensorflow.python.util import compat
 
 # Import the names from python/training.py as train.Name.
 from tensorflow.python.training import training as train

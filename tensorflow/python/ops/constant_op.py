@@ -105,10 +105,10 @@ import tensorflow.python.platform
 import numpy as np
 
 from tensorflow.core.framework import attr_value_pb2
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
-from tensorflow.python.framework import types
 
 
 def constant(value, dtype=None, shape=None, name="Const"):
@@ -172,20 +172,32 @@ def _ConstantShape(op):
       [d.size for d in op.get_attr("value").tensor_shape.dim])]
 
 
-ops.register_tensor_conversion_function((list, tuple), constant, 100)
-ops.register_tensor_conversion_function(np.ndarray, constant, 100)
-ops.register_tensor_conversion_function(np.generic, constant, 100)
-ops.register_tensor_conversion_function(object, constant, 200)
+def _constant_tensor_conversion_function(v, dtype=None, name=None,
+                                         as_ref=False):
+  _ = as_ref
+  return constant(v, dtype=dtype, name=name)
 
-def _tensor_shape_tensor_conversion_function(s, dtype=None, name=None):
+
+ops.register_tensor_conversion_function(
+    (list, tuple), _constant_tensor_conversion_function, 100)
+ops.register_tensor_conversion_function(
+    np.ndarray, _constant_tensor_conversion_function, 100)
+ops.register_tensor_conversion_function(
+    np.generic, _constant_tensor_conversion_function, 100)
+ops.register_tensor_conversion_function(
+    object, _constant_tensor_conversion_function, 200)
+
+def _tensor_shape_tensor_conversion_function(s, dtype=None, name=None,
+                                             as_ref=False):
+  _ = as_ref
   if not s.is_fully_defined():
     raise ValueError(
         "Cannot convert a partially known TensorShape to a Tensor: %s" % s)
   if dtype is not None:
-    if dtype not in (types.int32, types.int64):
+    if dtype not in (dtypes.int32, dtypes.int64):
       raise TypeError("Cannot convert a TensorShape to dtype: %s" % dtype)
   else:
-    dtype = types.int32
+    dtype = dtypes.int32
   if name is None:
     name = "shape_as_tensor"
   return constant(s.as_list(), dtype=dtype, name=name)
@@ -193,14 +205,16 @@ def _tensor_shape_tensor_conversion_function(s, dtype=None, name=None):
 ops.register_tensor_conversion_function(
     tensor_shape.TensorShape, _tensor_shape_tensor_conversion_function, 100)
 
-def _dimension_tensor_conversion_function(d, dtype=None, name=None):
+def _dimension_tensor_conversion_function(d, dtype=None, name=None,
+                                          as_ref=False):
+  _ = as_ref
   if d.value is None:
     raise ValueError("Cannot convert an unknown Dimension to a Tensor: %s" % d)
   if dtype is not None:
-    if dtype not in (types.int32, types.int64):
+    if dtype not in (dtypes.int32, dtypes.int64):
       raise TypeError("Cannot convert a TensorShape to dtype: %s" % dtype)
   else:
-    dtype = types.int32
+    dtype = dtypes.int32
   if name is None:
     name = "shape_as_tensor"
   return constant(d.value, dtype=dtype, name=name)

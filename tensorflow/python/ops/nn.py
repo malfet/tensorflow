@@ -16,11 +16,10 @@
 # pylint: disable=wildcard-import,unused-import,g-bad-import-order
 """## Activation Functions
 
-The activation ops provide different types of nonlinearities for use in
-neural networks.  These include smooth nonlinearities (`sigmoid`,
-`tanh`, and `softplus`), continuous but not everywhere differentiable
-functions (`relu`, `relu6`, and `relu_x`), and random regularization
-(`dropout`).
+The activation ops provide different types of nonlinearities for use in neural
+networks.  These include smooth nonlinearities (`sigmoid`, `tanh`, `softplus`,
+and `softsign`), continuous but not everywhere differentiable functions (`relu`,
+`relu6`, and `relu_x`), and random regularization (`dropout`).
 
 All activation ops apply componentwise, and produce a tensor of the same
 shape as the input tensor.
@@ -28,6 +27,7 @@ shape as the input tensor.
 @@relu
 @@relu6
 @@softplus
+@@softsign
 @@dropout
 @@bias_add
 @@sigmoid
@@ -204,20 +204,24 @@ from __future__ import division
 from __future__ import print_function
 
 from six.moves import xrange  # pylint: disable=redefined-builtin
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.framework import types
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import candidate_sampling_ops
 from tensorflow.python.ops import constant_op
 from tensorflow.python.ops import control_flow_ops
 from tensorflow.python.ops import embedding_ops
+from tensorflow.python.ops import init_ops
 from tensorflow.python.ops import math_ops
 from tensorflow.python.ops import nn_grad
 from tensorflow.python.ops import nn_ops
 from tensorflow.python.ops import numerics
 from tensorflow.python.ops import random_ops
+from tensorflow.python.ops import rnn_cell
+from tensorflow.python.ops import seq2seq
 from tensorflow.python.ops import sparse_ops
+from tensorflow.python.ops import variable_scope as vs
 from tensorflow.python.ops.math_ops import sigmoid
 from tensorflow.python.ops.math_ops import tanh
 
@@ -225,6 +229,7 @@ from tensorflow.python.ops.math_ops import tanh
 from tensorflow.python.ops.nn_ops import *
 from tensorflow.python.ops.candidate_sampling_ops import *
 from tensorflow.python.ops.embedding_ops import *
+from tensorflow.python.ops.rnn import *
 
 
 def sigmoid_cross_entropy_with_logits(logits, targets, name=None):
@@ -266,28 +271,6 @@ def sigmoid_cross_entropy_with_logits(logits, targets, name=None):
     return math_ops.add(nn_ops.relu(logits) - logits * targets,
                         math_ops.log(1 + math_ops.exp(-math_ops.abs(logits))),
                         name=name)
-
-
-def xw_plus_b(x, weights, biases, name=None):
-  """Computes matmul(x, weights) + biases.
-
-  Args:
-    x: a 2D tensor.  Dimensions typically: batch, in_units
-    weights: a 2D tensor.  Dimensions typically: in_units, out_units
-    biases: a 1D tensor.  Dimensions: out_units
-    name: A name for the operation (optional).  If not specified
-      "wx_plus_b" is used.
-
-  Returns:
-    A 2-D Tensor computing matmul(x, weights) + biases.
-    Dimensions typically: batch, out_units.
-  """
-  with ops.op_scope([x, weights, biases], name, "xw_plus_b") as name:
-    x = ops.convert_to_tensor(x, name="x")
-    weights = ops.convert_to_tensor(weights, name="weights")
-    biases = ops.convert_to_tensor(biases, name="biases")
-    mm = math_ops.matmul(x, weights)
-    return nn_ops.bias_add(mm, biases, name=name)
 
 
 def relu_layer(x, weights, biases, name=None):
@@ -360,60 +343,7 @@ def zero_fraction(value, name=None):
     value = ops.convert_to_tensor(value, name="value")
     zero = constant_op.constant(0, dtype=value.dtype, name="zero")
     return math_ops.reduce_mean(math_ops.cast(math_ops.equal(value, zero),
-                                              types.float32))
-
-
-def dropout(x, keep_prob, noise_shape=None, seed=None, name=None):
-  """Computes dropout.
-
-  With probability `keep_prob`, outputs the input element scaled up by
-  `1 / keep_prob`, otherwise outputs `0`.  The scaling is so that the expected
-  sum is unchanged.
-
-  By default, each element is kept or dropped independently.  If `noise_shape`
-  is specified, it must be
-  [broadcastable](http://docs.scipy.org/doc/numpy/user/basics.broadcasting.html)
-  to the shape of `x`, and only dimensions with `noise_shape[i] == shape(x)[i]`
-  will make independent decisions.  For example, if `shape(x) = [k, l, m, n]`
-  and `noise_shape = [k, 1, 1, n]`, each batch and channel component will be
-  kept independently and each row and column will be kept or not kept together.
-
-  Args:
-    x: A tensor.
-    keep_prob: A scalar `Tensor` with the same type as x. The probability
-      that each element is kept.
-    noise_shape: A 1-D `Tensor` of type `int32`, representing the
-      shape for randomly generated keep/drop flags.
-    seed: A Python integer. Used to create random seeds. See
-      [`set_random_seed`](../../api_docs/python/constant_op.md#set_random_seed)
-      for behavior.
-    name: A name for this operation (optional).
-
-  Returns:
-    A Tensor of the same shape of `x`.
-
-  Raises:
-    ValueError: If `keep_prob` is not in `(0, 1]`.
-  """
-  with ops.op_scope([x], name, "dropout") as name:
-    x = ops.convert_to_tensor(x, name="x")
-    if isinstance(keep_prob, float) and not(0 < keep_prob <= 1):
-      raise ValueError("keep_prob must be a scalar tensor or a float in the "
-                       "range (0, 1], got %g" % keep_prob)
-    keep_prob = ops.convert_to_tensor(
-        keep_prob, dtype=x.dtype, name="keep_prob")
-    keep_prob.get_shape().assert_is_compatible_with(tensor_shape.scalar())
-
-    noise_shape = noise_shape or array_ops.shape(x)
-    # uniform [keep_prob, 1.0 + keep_prob)
-    random_tensor = keep_prob
-    random_tensor += random_ops.random_uniform(
-        noise_shape, seed=seed, dtype=x.dtype)
-    # 0. if [keep_prob, 1.0) and 1. if [1.0, 1.0 + keep_prob)
-    binary_tensor = math_ops.floor(random_tensor)
-    ret = x * math_ops.inv(keep_prob) * binary_tensor
-    ret.set_shape(x.get_shape())
-    return ret
+                                              dtypes.float32))
 
 
 def depthwise_conv2d(input, filter, strides, padding, name=None):
@@ -633,41 +563,48 @@ def _compute_sampled_logits(weights, biases, inputs, labels, num_sampled,
   sum to 1 per-example.
 
   Args:
-    weights: tensor of label embeddings with shape = [num_classes, dim].
-    biases: tensor of num_classes label biases
-    inputs: tensor with shape = [batch_size, dim] corresponding to forward
-        activations of the input network
-    labels: int tensor with shape [batch_size, num_true]
-    num_sampled: number of label classes to sample per batch
-    num_classes: number of possible label classes in the data (e.g. vocab size)
-    num_true: number of target classes per example (default: 1)
+    weights: A `Tensor` of shape `[num_classes, dim]`, or a list of `Tensor`
+        objects whose concatenation along dimension 0 has shape
+        `[num_classes, dim]`.  The (possibly-sharded) class embeddings.
+    biases: A `Tensor` of shape `[num_classes]`.  The class biases.
+    inputs: A `Tensor` of shape `[batch_size, dim]`.  The forward
+        activations of the input network.
+    labels: A `Tensor` of type `int64` and shape `[batch_size,
+        num_true]`. The target classes.  Note that this format differs from
+        the `labels` argument of `nn.softmax_cross_entropy_with_logits`.
+    num_sampled: An `int`.  The number of classes to randomly sample per batch.
+    num_classes: An `int`. The number of possible classes.
+    num_true: An `int`.  The number of target classes per training example.
     sampled_values: a tuple of (`sampled_candidates`, `true_expected_count`,
-        `sampled_expected_count`) returned by a `*_candidate_sampler` function
-        to use (if None, we default to `log_uniform_candidate_sampler`)
-    subtract_log_q: subtract the log expected count of the labels in the sample
-        to get the logits of the true labels (default: True)
-        Turn off for Negative Sampling.
-    remove_accidental_hits: whether to remove "accidental hits" where a sampled
-        label equals the true labels (bool, default: False)
+        `sampled_expected_count`) returned by a `*_candidate_sampler` function.
+        (if None, we default to `log_uniform_candidate_sampler`)
+    subtract_log_q: A `bool`.  whether to subtract the log expected count of
+        the labels in the sample to get the logits of the true labels.
+        Default is True.  Turn off for Negative Sampling.
+    remove_accidental_hits:  A `bool`.  whether to remove "accidental hits"
+        where a sampled class equals one of the target classes.  Default is
+        False.
     name: A name for the operation (optional).
-
   Returns:
-    out_logits, out_labels: tensors with shape
-        `[batch_size, num_true + num_sampled]` for passing to either
-        `sigmoid_cross_entropy_with_logits` (NCE)
-        or `softmax_cross_entropy_with_logits` (sampled softmax).
+    out_logits, out_labels: `Tensor` objects each with shape
+        `[batch_size, num_true + num_sampled]`, for passing to either
+        `nn.sigmoid_cross_entropy_with_logits` (NCE) or
+        `nn.softmax_cross_entropy_with_logits` (sampled softmax).
   """
 
+  if not isinstance(weights, list):
+    weights = [weights]
+
   with ops.op_scope(
-      [weights, biases, inputs, labels], name, "compute_sampled_logits"):
-    if labels.dtype != types.int64:
-      labels = math_ops.cast(labels, types.int64)
+      weights + [biases, inputs, labels], name, "compute_sampled_logits"):
+    if labels.dtype != dtypes.int64:
+      labels = math_ops.cast(labels, dtypes.int64)
     labels_flat = array_ops.reshape(labels, [-1])
 
     # Sample the negative labels.
-    #   sampled shape: num_sampled vector
-    #   true_expected_count shape = [batch_size, 1]
-    #   sampled_expected_count shape = num_sampled vector
+    #   sampled shape: [num_sampled] tensor
+    #   true_expected_count shape = [batch_size, 1] tensor
+    #   sampled_expected_count shape = [num_sampled] tensor
     if sampled_values is None:
       sampled_values = candidate_sampling_ops.log_uniform_candidate_sampler(
           true_classes=labels,
@@ -680,12 +617,18 @@ def _compute_sampled_logits(weights, biases, inputs, labels, num_sampled,
     sampled, true_expected_count, sampled_expected_count = sampled_values
     # pylint: enable=unpacking-non-sequence
 
+    # labels_flat is a [batch_size * num_true] tensor
+    # sampled is a [num_sampled] int tensor
+    all_ids = array_ops.concat(0, [labels_flat, sampled])
+
     # weights shape is [num_classes, dim]
-    # labels_flat is a [batch_size * num_true] vector
+    all_w = embedding_ops.embedding_lookup(weights, all_ids)
+    all_b = embedding_ops.embedding_lookup(biases, all_ids)
     # true_w shape is [batch_size * num_true, dim]
-    # true_b is a [batch_size * num_true] vector
-    true_w = embedding_ops.embedding_lookup(weights, labels_flat)
-    true_b = embedding_ops.embedding_lookup(biases, labels_flat)
+    # true_b is a [batch_size * num_true] tensor
+    true_w = array_ops.slice(
+        all_w, [0, 0], array_ops.pack([array_ops.shape(labels_flat)[0], -1]))
+    true_b = array_ops.slice(all_b, [0], array_ops.shape(labels_flat))
 
     # inputs shape is [batch_size, dim]
     # true_w shape is [batch_size * num_true, dim]
@@ -704,11 +647,11 @@ def _compute_sampled_logits(weights, biases, inputs, labels, num_sampled,
     true_logits += true_b
 
     # Lookup weights and biases for sampled labels.
-    #   sampled is a num_sampled int vector
     #   sampled_w shape is [num_sampled, dim]
-    #   sampled_b is a num_sampled float vector
-    sampled_w = embedding_ops.embedding_lookup(weights, sampled)
-    sampled_b = embedding_ops.embedding_lookup(biases, sampled)
+    #   sampled_b is a [num_sampled] float tensor
+    sampled_w = array_ops.slice(
+        all_w, array_ops.pack([array_ops.shape(labels_flat)[0], 0]), [-1, -1])
+    sampled_b = array_ops.slice(all_b, array_ops.shape(labels_flat), [-1])
 
     # inputs has shape [batch_size, dim]
     # sampled_w has shape [num_sampled, dim]
@@ -726,13 +669,15 @@ def _compute_sampled_logits(weights, biases, inputs, labels, num_sampled,
       # This is how SparseToDense expects the indices.
       acc_indices_2d = array_ops.reshape(acc_indices, [-1, 1])
       acc_ids_2d_int32 = array_ops.reshape(math_ops.cast(
-          acc_ids, types.int32), [-1, 1])
+          acc_ids, dtypes.int32), [-1, 1])
       sparse_indices = array_ops.concat(
           1, [acc_indices_2d, acc_ids_2d_int32], "sparse_indices")
       # Create sampled_logits_shape = [batch_size, num_sampled]
       sampled_logits_shape = array_ops.concat(
           0,
           [array_ops.shape(labels)[:1], array_ops.expand_dims(num_sampled, 0)])
+      if sampled_logits.dtype != acc_weights.dtype:
+        acc_weights = math_ops.cast(acc_weights, sampled_logits.dtype)
       sampled_logits += sparse_ops.sparse_to_dense(
           sparse_indices, sampled_logits_shape, acc_weights, 0.0)
 
@@ -777,17 +722,19 @@ def nce_loss(weights, biases, inputs, labels, num_sampled, num_classes,
   with an otherwise unused class.
 
   Args:
-    weights: A `Tensor` of shape [num_classes, dim].  The class embeddings.
-    biases: A `Tensor` of shape [num_classes].  The class biases.
-    inputs: A `Tensor` of shape [batch_size, dim].  The forward
+    weights: A `Tensor` of shape `[num_classes, dim]`, or a list of `Tensor`
+        objects whose concatenation along dimension 0 has shape
+        [num_classes, dim].  The (possibly-sharded) class embeddings.
+    biases: A `Tensor` of shape `[num_classes]`.  The class biases.
+    inputs: A `Tensor` of shape `[batch_size, dim]`.  The forward
         activations of the input network.
     labels: A `Tensor` of type `int64` and shape `[batch_size,
-      num_true]`. The target classes.
+        num_true]`. The target classes.
     num_sampled: An `int`.  The number of classes to randomly sample per batch.
     num_classes: An `int`. The number of possible classes.
     num_true: An `int`.  The number of target classes per training example.
-    sampled_values: a tuple of `(sampled_candidates, true_expected_count,
-        sampled_expected_count)` returned by a `*_candidate_sampler` function.
+    sampled_values: a tuple of (`sampled_candidates`, `true_expected_count`,
+        `sampled_expected_count`) returned by a `*_candidate_sampler` function.
         (if None, we default to `log_uniform_candidate_sampler`)
     remove_accidental_hits:  A `bool`.  Whether to remove "accidental hits"
         where a sampled class equals one of the target classes.  If set to
@@ -799,7 +746,7 @@ def nce_loss(weights, biases, inputs, labels, num_sampled, num_classes,
     name: A name for the operation (optional).
 
   Returns:
-    A batch_size 1-D tensor of per-example NCE losses.
+    A `batch_size` 1-D tensor of per-example NCE losses.
   """
   logits, labels = _compute_sampled_logits(
       weights, biases, inputs, labels, num_sampled, num_classes,
@@ -838,18 +785,20 @@ def sampled_softmax_loss(weights, biases, inputs, labels, num_sampled,
   Also see Section 3 of http://arxiv.org/abs/1412.2007 for the math.
 
   Args:
-    weights: A `Tensor` of shape [num_classes, dim].  The class embeddings.
-    biases: A `Tensor` of shape [num_classes].  The class biases.
-    inputs: A `Tensor` of shape [batch_size, dim].  The forward
+    weights: A `Tensor` of shape `[num_classes, dim]`, or a list of `Tensor`
+        objects whose concatenation along dimension 0 has shape
+        [num_classes, dim].  The (possibly-sharded) class embeddings.
+    biases: A `Tensor` of shape `[num_classes]`.  The class biases.
+    inputs: A `Tensor` of shape `[batch_size, dim]`.  The forward
         activations of the input network.
     labels: A `Tensor` of type `int64` and shape `[batch_size,
-      num_true]`. The target classes.  Note that this format differs from
-      the `labels` argument of `nn.softmax_cross_entropy_with_logits`.
+        num_true]`. The target classes.  Note that this format differs from
+        the `labels` argument of `nn.softmax_cross_entropy_with_logits`.
     num_sampled: An `int`.  The number of classes to randomly sample per batch.
     num_classes: An `int`. The number of possible classes.
     num_true: An `int`.  The number of target classes per training example.
-    sampled_values: a tuple of `(sampled_candidates, true_expected_count,
-        sampled_expected_count)` returned by a `*_candidate_sampler` function.
+    sampled_values: a tuple of (`sampled_candidates`, `true_expected_count`,
+        `sampled_expected_count`) returned by a `*_candidate_sampler` function.
         (if None, we default to `log_uniform_candidate_sampler`)
     remove_accidental_hits:  A `bool`.  whether to remove "accidental hits"
         where a sampled class equals one of the target classes.  Default is
@@ -857,7 +806,7 @@ def sampled_softmax_loss(weights, biases, inputs, labels, num_sampled,
     name: A name for the operation (optional).
 
   Returns:
-    A batch_size 1-D tensor of per-example sampled softmax losses.
+    A `batch_size` 1-D tensor of per-example sampled softmax losses.
 
   """
   logits, labels = _compute_sampled_logits(
@@ -868,5 +817,5 @@ def sampled_softmax_loss(weights, biases, inputs, labels, num_sampled,
       remove_accidental_hits=remove_accidental_hits,
       name=name)
   sampled_losses = nn_ops.softmax_cross_entropy_with_logits(logits, labels)
-  # sampled_losses is a batch_size vector.
+  # sampled_losses is a [batch_size] tensor.
   return sampled_losses

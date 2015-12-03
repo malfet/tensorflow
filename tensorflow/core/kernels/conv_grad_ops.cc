@@ -242,13 +242,13 @@ typedef Eigen::GpuDevice GPUDevice;
   const auto expanded_out_cols = (output_cols - 1) * stride + 1;               \
   const auto padded_out_rows = input_rows + filter_rows - 1;                   \
   const auto padded_out_cols = input_cols + filter_cols - 1;                   \
-  const auto top_pad_rows = filter_rows - 1 - pad_rows;                        \
-  const auto left_pad_cols = filter_cols - 1 - pad_cols;                       \
-  const auto bottom_pad_rows =                                                 \
+  const int top_pad_rows = filter_rows - 1 - pad_rows;                         \
+  const int left_pad_cols = filter_cols - 1 - pad_cols;                        \
+  const int bottom_pad_rows =                                                  \
       padded_out_rows - expanded_out_rows - top_pad_rows;                      \
-  const auto right_pad_cols =                                                  \
+  const int right_pad_cols =                                                   \
       padded_out_cols - expanded_out_cols - left_pad_cols;                     \
-  Eigen::DSizes<Eigen::DenseIndex, 4> strides{1, stride, stride, 1};           \
+  Eigen::DSizes<int, 4> strides{1, stride, stride, 1};                         \
   VLOG(2) << "Conv2d: " << label                                               \
           << ": expanded_out_rows = " << expanded_out_rows                     \
           << ", expanded_out_cols = " << expanded_out_cols                     \
@@ -383,12 +383,53 @@ class Conv2DCustomBackpropInputOp : public OpKernel {
     // The output image size is the spatial size of the output.
     const int output_image_size = out_rows * out_cols;
 
+    // TODO(andydavis) Get L2/L3 cache sizes from device.
+    const size_t l2_cache_size = 256LL << 10;
+    const size_t l3_cache_size = 30LL << 20;
+
+    // Use L3 cache size as target working set size.
+    const size_t target_working_set_size = l3_cache_size / sizeof(T);
+
+    // Calculate size of matrices involved in MatMul: C = A x B.
+    const size_t size_A = output_image_size * out_depth;
+
+    const size_t size_B = filter_total_size * out_depth;
+
+    const size_t size_C = output_image_size * filter_total_size;
+
+    const size_t work_unit_size = size_A + size_B + size_C;
+
+    auto worker_threads = *(context->device()->tensorflow_cpu_worker_threads());
+
+    // Calculate per-thread work unit size.
+    const size_t thread_work_unit_size =
+        work_unit_size / worker_threads.num_threads;
+
+    // Set minimum per-thread work unit size to size of L2 cache.
+    const size_t min_thread_work_unit_size = l2_cache_size / sizeof(T);
+
+    // Use parallel tensor contractions if there is no batching, or if the
+    // minimum per-thread work unit size threshold has been exceeded.
+    // Otherwise, revert to multiple single-threaded matmul ops running in
+    // parallel to keep all threads busy.
+    // TODO(andydavis) Explore alternatives to branching the code in this way
+    // (i.e. run multiple, parallel tensor contractions in another thread pool).
+    const bool use_parallel_contraction =
+        batch == 1 || thread_work_unit_size >= min_thread_work_unit_size;
+
+    const size_t shard_size =
+        use_parallel_contraction
+            ? 1
+            : (target_working_set_size + work_unit_size - 1) / work_unit_size;
+
     Tensor col_buffer;
-    OP_REQUIRES_OK(
-        context,
-        context->allocate_temp(
-            DataTypeToEnum<T>::value,
-            TensorShape({output_image_size, filter_total_size}), &col_buffer));
+    OP_REQUIRES_OK(context,
+                   context->allocate_temp(
+                       DataTypeToEnum<T>::value,
+                       TensorShape({static_cast<int64>(shard_size),
+                                    static_cast<int64>(output_image_size),
+                                    static_cast<int64>(filter_total_size)}),
+                       &col_buffer));
 
     // The input offset corresponding to a single input image.
     const int input_offset = input_rows * input_cols * in_depth;
@@ -400,31 +441,74 @@ class Conv2DCustomBackpropInputOp : public OpKernel {
     auto* out_backprop_data = out_backprop.template flat<T>().data();
     auto* input_backprop_data = in_backprop->template flat<T>().data();
 
-    typedef Eigen::TensorMap<Eigen::Tensor<T, 2, Eigen::RowMajor>,
-                             Eigen::Unaligned> TensorMap;
-    typedef Eigen::TensorMap<Eigen::Tensor<const T, 2, Eigen::RowMajor>,
-                             Eigen::Unaligned> ConstTensorMap;
+    if (use_parallel_contraction) {
+      typedef Eigen::TensorMap<Eigen::Tensor<T, 2, Eigen::RowMajor>,
+                               Eigen::Unaligned> TensorMap;
+      typedef Eigen::TensorMap<Eigen::Tensor<const T, 2, Eigen::RowMajor>,
+                               Eigen::Unaligned> ConstTensorMap;
 
-    // Initialize contraction dims (we need to transpose 'B' below).
-    Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> contract_dims;
-    contract_dims[0].first = 1;
-    contract_dims[0].second = 1;
+      // Initialize contraction dims (we need to transpose 'B' below).
+      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 1> contract_dims;
+      contract_dims[0].first = 1;
+      contract_dims[0].second = 1;
 
-    for (int image_id = 0; image_id < batch; ++image_id) {
-      // Compute gradient into col_buffer.
-      TensorMap C(col_buffer_data, output_image_size, filter_total_size);
+      for (int image_id = 0; image_id < batch; ++image_id) {
+        // Compute gradient into col_buffer.
+        TensorMap C(col_buffer_data, output_image_size, filter_total_size);
 
-      ConstTensorMap A(out_backprop_data + output_offset * image_id,
-                       output_image_size, out_depth);
-      ConstTensorMap B(filter_data, filter_total_size, out_depth);
+        ConstTensorMap A(out_backprop_data + output_offset * image_id,
+                         output_image_size, out_depth);
+        ConstTensorMap B(filter_data, filter_total_size, out_depth);
 
-      C.device(context->eigen_cpu_device()) = A.contract(B, contract_dims);
+        C.device(context->eigen_cpu_device()) = A.contract(B, contract_dims);
 
-      Col2im<T>(col_buffer_data, in_depth, input_rows, input_cols, filter_rows,
-                filter_cols, pad_top, pad_left, pad_bottom, pad_right, stride,
-                stride, input_backprop_data);
+        Col2im<T>(col_buffer_data, in_depth, input_rows, input_cols,
+                  filter_rows, filter_cols, pad_top, pad_left, pad_bottom,
+                  pad_right, stride, stride, input_backprop_data);
 
-      input_backprop_data += input_offset;
+        input_backprop_data += input_offset;
+      }
+    } else {
+      typedef Eigen::Map<Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic,
+                                       Eigen::RowMajor>> MatrixMap;
+      typedef Eigen::Map<const Eigen::Matrix<T, Eigen::Dynamic, Eigen::Dynamic,
+                                             Eigen::RowMajor>> ConstMatrixMap;
+
+      for (int image_id = 0; image_id < batch; image_id += shard_size) {
+        const int shard_limit = std::min(static_cast<int>(shard_size),
+                                         static_cast<int>(batch) - image_id);
+
+        auto shard = [&in_depth, &input_rows, &input_cols, &filter_rows,
+                      &filter_cols, &pad_top, &pad_left, &pad_bottom,
+                      &pad_right, &stride, &output_image_size,
+                      &filter_total_size, &out_depth, &input_backprop_data,
+                      &col_buffer_data, &out_backprop_data, &filter_data,
+                      &input_offset, &output_offset,
+                      &size_C](int64 start, int64 limit) {
+          for (int shard_id = start; shard_id < limit; ++shard_id) {
+            T* im2col_buf = col_buffer_data + shard_id * size_C;
+            T* input_data = input_backprop_data + shard_id * input_offset;
+            const T* out_data = out_backprop_data + shard_id * output_offset;
+
+            // Compute gradient into 'im2col_buf'.
+            MatrixMap C(im2col_buf, output_image_size, filter_total_size);
+
+            ConstMatrixMap A(out_data, output_image_size, out_depth);
+            ConstMatrixMap B(filter_data, filter_total_size, out_depth);
+
+            C.noalias() = A * B.transpose();
+
+            Col2im<T>(im2col_buf, in_depth, input_rows, input_cols, filter_rows,
+                      filter_cols, pad_top, pad_left, pad_bottom, pad_right,
+                      stride, stride, input_data);
+          }
+        };
+        Shard(worker_threads.num_threads, worker_threads.workers, shard_limit,
+              work_unit_size, shard);
+
+        input_backprop_data += input_offset * shard_limit;
+        out_backprop_data += output_offset * shard_limit;
+      }
     }
   }
 
@@ -620,8 +704,8 @@ class Conv2DCustomBackpropFilterOp : public OpKernel {
                     &pad_left, &pad_bottom, &pad_right, &stride, &input_offset,
                     &size_A](int64 start, int64 limit) {
         for (int shard_id = start; shard_id < limit; ++shard_id) {
-          auto input_data_shard = input_data + shard_id * input_offset;
-          auto col_data_shard = col_buffer_data + shard_id * size_A;
+          const T* input_data_shard = input_data + shard_id * input_offset;
+          T* col_data_shard = col_buffer_data + shard_id * size_A;
 
           // When we compute the gradient with respect to the filters, we need
           // to do im2col to allow gemm-type computation.
@@ -725,9 +809,11 @@ class Conv2DSlowBackpropInputOp : public OpKernel {
                    context->allocate_output(0, input_shape, &in_backprop));
 
     const int padding_rows =
-        (output_rows - 1) * stride + filter_rows - input_rows;
+        (padding_ == VALID) ? 0 : (output_rows - 1) * stride + filter_rows -
+                                      input_rows;
     const int padding_cols =
-        (output_cols - 1) * stride + filter_cols - input_cols;
+        (padding_ == VALID) ? 0 : (output_cols - 1) * stride + filter_cols -
+                                      input_cols;
 
     // TODO(keveman): cuDNN only supports equal padding on both sides, so only
     // calling it when that is true. Remove this check when (if?) cuDNN starts
@@ -870,16 +956,17 @@ class Conv2DSlowBackpropInputOp : public OpKernel {
                      context->allocate_temp(DataTypeToEnum<T>::v(),
                                             padded_out_shape, &padded_output));
 
-      Eigen::DSizes<Eigen::DenseIndex, 4> trivial_order{0, 1, 2, 3};
-      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 4> pad_dims{
+      Eigen::DSizes<int, 4> trivial_order{0, 1, 2, 3};
+      Eigen::array<Eigen::IndexPair<int>, 4> pad_dims{
           {{0, 0},
            {top_pad_rows, bottom_pad_rows},
            {left_pad_cols, right_pad_cols},
            {0, 0}}};
 
-      functor::InflatePadAndShuffle<Device, T, 4, Eigen::DenseIndex>()(
-          context->eigen_device<Device>(), out_backprop.tensor<T, 4>(), strides,
-          pad_dims, trivial_order, padded_output.tensor<T, 4>());
+      functor::InflatePadAndShuffle<Device, T, 4, int>()(
+          context->eigen_device<Device>(), To32Bit(out_backprop.tensor<T, 4>()),
+          strides, pad_dims, trivial_order,
+          To32Bit(padded_output.tensor<T, 4>()));
       const Tensor& padded_output_cref = padded_output;
 
       // We then need to fill a new "reverted" filter
@@ -892,11 +979,11 @@ class Conv2DSlowBackpropInputOp : public OpKernel {
                      context->allocate_temp(DataTypeToEnum<T>::v(),
                                             r_filter_shape, &r_filter));
 
-      Eigen::DSizes<Eigen::DenseIndex, 4> filter_order{0, 1, 3, 2};
+      Eigen::DSizes<int, 4> filter_order{0, 1, 3, 2};
       Eigen::array<bool, 4> filter_rev_dims{true, true, false, false};
-      functor::ShuffleAndReverse<Device, T, 4, Eigen::DenseIndex>()(
-          context->eigen_device<Device>(), filter.tensor<T, 4>(), filter_order,
-          filter_rev_dims, r_filter.tensor<T, 4>());
+      functor::ShuffleAndReverse<Device, T, 4, int>()(
+          context->eigen_device<Device>(), To32Bit(filter.tensor<T, 4>()),
+          filter_order, filter_rev_dims, To32Bit(r_filter.tensor<T, 4>()));
       const Tensor& r_filter_cref = r_filter;
 
       // Now we can call conv_2d directly.
@@ -955,20 +1042,22 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
                    context->allocate_output(0, filter_shape, &filter_backprop));
 
     const int padding_rows =
-        (output_rows - 1) * stride + filter_rows - input_rows;
+        (padding_ == VALID) ? 0 : (output_rows - 1) * stride + filter_rows -
+                                      input_rows;
     const int padding_cols =
-        (output_cols - 1) * stride + filter_cols - input_cols;
+        (padding_ == VALID) ? 0 : (output_cols - 1) * stride + filter_cols -
+                                      input_cols;
 
     // TODO(zhengxq): cuDNN only supports equal padding on both sides, so only
     // calling it when that is true. Remove this check when (if?) cuDNN starts
     // supporting different padding.
-    bool padding_compatible =
-        (padding_rows % 2 == 0) && (padding_cols % 2 == 0);
+    bool rows_odd = (padding_rows % 2 != 0);
+    bool cols_odd = (padding_cols % 2 != 0);
 
     auto* stream = context->op_device_context<GPUDeviceContext>()->stream();
     OP_REQUIRES(context, stream, errors::Internal("No GPU stream available."));
 
-    if (use_cudnn_ && padding_compatible) {
+    if (use_cudnn_) {
       if (filter_rows == 1 && filter_cols == 1 && stride == 1) {
         const uint64 m = in_depth;
         const uint64 k = batch * input_rows * input_cols;
@@ -1005,10 +1094,31 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
         return;
       }
 
+      Tensor compatible_input;
+      if (rows_odd || cols_odd) {
+        // If a padding dimension is odd, we have one more element on the right
+        // side or the bottom side. This is unsupported in cudnn. Therefore,
+        // we pad that extra element and make it compatible.
+        OP_REQUIRES_OK(
+            context,
+            context->allocate_temp(
+                DataTypeToEnum<T>::value,
+                TensorShape({input.dim_size(0), input.dim_size(1) + rows_odd,
+                             input.dim_size(2) + cols_odd, input.dim_size(3)}),
+                &compatible_input));
+
+        functor::PadInput<GPUDevice, T, int>()(
+            context->template eigen_device<GPUDevice>(),
+            To32Bit(input.tensor<T, 4>()), 0, rows_odd, 0, cols_odd,
+            To32Bit(compatible_input.tensor<T, 4>()));
+      } else {
+        compatible_input = input;
+      }
+
       perftools::gputools::dnn::BatchDescriptor input_desc;
       input_desc.set_count(batch)
-          .set_height(input_rows)
-          .set_width(input_cols)
+          .set_height(compatible_input.dim_size(1))
+          .set_width(compatible_input.dim_size(2))
           .set_feature_map_count(in_depth)
           .set_layout(perftools::gputools::dnn::DataLayout::kBatchDepthYX);
       perftools::gputools::dnn::BatchDescriptor output_desc;
@@ -1062,14 +1172,19 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
                                        transformed_out_backprop.tensor<T, 4>());
 
       Tensor transformed_input;
-      OP_REQUIRES_OK(context,
-                     context->allocate_temp(
-                         DataTypeToEnum<T>::value,
-                         TensorShape({batch, in_depth, input_rows, input_cols}),
-                         &transformed_input));
-      functor::NHWCToNCHW<Device, T>()(context->eigen_device<Device>(),
-                                       input.tensor<T, 4>(),
-                                       transformed_input.tensor<T, 4>());
+      OP_REQUIRES_OK(
+          context,
+          context->allocate_temp(
+              DataTypeToEnum<T>::value,
+              TensorShape({
+                  compatible_input.dim_size(0), compatible_input.dim_size(3),
+                  compatible_input.dim_size(1), compatible_input.dim_size(2),
+              }),
+              &transformed_input));
+      functor::NHWCToNCHW<Device, T>()(
+          context->eigen_device<Device>(),
+          const_cast<const Tensor&>(compatible_input).tensor<T, 4>(),
+          transformed_input.tensor<T, 4>());
 
       auto out_backprop_ptr =
           AsDeviceMemory(transformed_out_backprop.template flat<T>().data(),
@@ -1109,7 +1224,7 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
       //   [batch, out_rows, out_cols, out_depth]
       // And we need to change it to
       //   [out_depth, out_rows, out_cols, batch]
-      Eigen::DSizes<Eigen::DenseIndex, 4> out_order{3, 1, 2, 0};
+      Eigen::DSizes<int, 4> out_order{3, 1, 2, 0};
       TensorShape padded_out_shape(
           {out_depth, padded_out_rows, padded_out_cols, batch});
       Tensor padded_output;
@@ -1117,14 +1232,14 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
                      context->allocate_temp(DataTypeToEnum<T>::v(),
                                             padded_out_shape, &padded_output));
 
-      Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 4> pad_dims{
+      Eigen::array<Eigen::IndexPair<int>, 4> pad_dims{
           {{0, 0},
            {top_pad_rows, bottom_pad_rows},
            {left_pad_cols, right_pad_cols},
            {0, 0}}};
-      functor::InflatePadAndShuffle<Device, T, 4, Eigen::DenseIndex>()(
-          context->eigen_device<Device>(), out_backprop.tensor<T, 4>(), strides,
-          pad_dims, out_order, padded_output.tensor<T, 4>());
+      functor::InflatePadAndShuffle<Device, T, 4, int>()(
+          context->eigen_device<Device>(), To32Bit(out_backprop.tensor<T, 4>()),
+          strides, pad_dims, out_order, To32Bit(padded_output.tensor<T, 4>()));
       const Tensor& padded_output_cref = padded_output;
 
       // For the backprop of the filter, we need to transpose the input.
@@ -1132,7 +1247,7 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
       //   [batch, in_rows, in_cols, in_depth]
       // And we need to change it to
       //   [in_rows, in_cols, batch, in_depth]
-      Eigen::DSizes<Eigen::DenseIndex, 4> in_order{1, 2, 0, 3};
+      Eigen::DSizes<int, 4> in_order{1, 2, 0, 3};
       TensorShape in_shuffle_shape({input_rows, input_cols, batch, in_depth});
       Tensor in_shuffle;
       OP_REQUIRES_OK(context,
@@ -1141,9 +1256,9 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
 
       // No need for reversing this time.
       Eigen::array<bool, 4> trivial_dims{false, false, false, false};
-      functor::ShuffleAndReverse<Device, T, 4, Eigen::DenseIndex>()(
-          context->eigen_device<Device>(), input.tensor<T, 4>(), in_order,
-          trivial_dims, in_shuffle.tensor<T, 4>());
+      functor::ShuffleAndReverse<Device, T, 4, int>()(
+          context->eigen_device<Device>(), To32Bit(input.tensor<T, 4>()),
+          in_order, trivial_dims, To32Bit(in_shuffle.tensor<T, 4>()));
       const Tensor& in_shuffle_cref = in_shuffle;
 
       // The output of the conv_2d would be
@@ -1166,12 +1281,13 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
           BrainPadding2EigenPadding(VALID));
 
       // Now copy the filter_backprop back to the destination.
-      Eigen::DSizes<Eigen::DenseIndex, 4> filter_order{1, 2, 3, 0};
+      Eigen::DSizes<int, 4> filter_order{1, 2, 3, 0};
       Eigen::array<bool, 4> filter_rev_dims{true, true, false, false};
       const Tensor& filter_shuffle_cref = filter_shuffle;
-      functor::ShuffleAndReverse<Device, T, 4, Eigen::DenseIndex>()(
-          context->eigen_device<Device>(), filter_shuffle_cref.tensor<T, 4>(),
-          filter_order, filter_rev_dims, filter_backprop->tensor<T, 4>());
+      functor::ShuffleAndReverse<Device, T, 4, int>()(
+          context->eigen_device<Device>(),
+          To32Bit(filter_shuffle_cref.tensor<T, 4>()), filter_order,
+          filter_rev_dims, To32Bit(filter_backprop->tensor<T, 4>()));
     }
   }
 
@@ -1186,25 +1302,6 @@ class Conv2DSlowBackpropFilterOp : public OpKernel {
 // Forward declarations of the functor specializations for GPU.
 namespace functor {
 #define DECLARE_GPU_SPEC(T)                                                  \
-  template <>                                                                \
-  void ShuffleAndReverse<GPUDevice, T, 4, Eigen::DenseIndex>::operator()(    \
-      const GPUDevice& d,                                                    \
-      typename TTypes<T, 4, Eigen::DenseIndex>::ConstTensor input,           \
-      const Eigen::DSizes<Eigen::DenseIndex, 4>& order,                      \
-      const Eigen::array<bool, 4>& reverse_dims,                             \
-      typename TTypes<T, 4, Eigen::DenseIndex>::Tensor output);              \
-  extern template struct ShuffleAndReverse<GPUDevice, T, 4,                  \
-                                           Eigen::DenseIndex>;               \
-  template <>                                                                \
-  void InflatePadAndShuffle<GPUDevice, T, 4, Eigen::DenseIndex>::operator()( \
-      const GPUDevice& d,                                                    \
-      typename TTypes<T, 4, Eigen::DenseIndex>::ConstTensor input,           \
-      const Eigen::DSizes<Eigen::DenseIndex, 4>& strides,                    \
-      const Eigen::array<Eigen::IndexPair<Eigen::DenseIndex>, 4>& pad_dims,  \
-      const Eigen::DSizes<Eigen::DenseIndex, 4>& order,                      \
-      typename TTypes<T, 4, Eigen::DenseIndex>::Tensor output);              \
-  extern template struct InflatePadAndShuffle<GPUDevice, T, 4,               \
-                                              Eigen::DenseIndex>;            \
   template <>                                                                \
   void ShuffleAndReverse<GPUDevice, T, 4, int>::operator()(                  \
       const GPUDevice& d, typename TTypes<T, 4, int>::ConstTensor input,     \
@@ -1244,7 +1341,13 @@ namespace functor {
       typename TTypes<T, 4>::ConstTensor filter,                             \
       typename TTypes<T, 4>::ConstTensor output_backprop, int input_rows,    \
       int input_cols, int stride);                                           \
-  extern template struct SpatialConvolutionBackwardInput<GPUDevice, T>
+  extern template struct SpatialConvolutionBackwardInput<GPUDevice, T>;      \
+  template <>                                                                \
+  void PadInput<GPUDevice, T, int>::operator()(                              \
+      const GPUDevice& d, typename TTypes<T, 4, int>::ConstTensor in,        \
+      int padding_rows_left, int padding_rows_right, int padding_cols_left,  \
+      int padding_cols_right, typename TTypes<T, 4, int>::Tensor out);       \
+  extern template struct PadInput<GPUDevice, T, int>;
 
 DECLARE_GPU_SPEC(float);
 #undef DECLARE_GPU_SPEC

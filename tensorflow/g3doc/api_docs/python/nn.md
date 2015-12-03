@@ -9,11 +9,10 @@ Note: Functions taking `Tensor` arguments can also take anything accepted by
 
 ## Activation Functions
 
-The activation ops provide different types of nonlinearities for use in
-neural networks.  These include smooth nonlinearities (`sigmoid`,
-`tanh`, and `softplus`), continuous but not everywhere differentiable
-functions (`relu`, `relu6`, and `relu_x`), and random regularization
-(`dropout`).
+The activation ops provide different types of nonlinearities for use in neural
+networks.  These include smooth nonlinearities (`sigmoid`, `tanh`, `softplus`,
+and `softsign`), continuous but not everywhere differentiable functions (`relu`,
+`relu6`, and `relu_x`), and random regularization (`dropout`).
 
 All activation ops apply componentwise, and produce a tensor of the same
 shape as the input tensor.
@@ -58,6 +57,23 @@ Computes Rectified Linear 6: `min(max(features, 0), 6)`.
 ### `tf.nn.softplus(features, name=None)` {#softplus}
 
 Computes softplus: `log(exp(features) + 1)`.
+
+##### Args:
+
+
+*  <b>`features`</b>: A `Tensor`. Must be one of the following types: `float32`, `float64`, `int32`, `int64`, `uint8`, `int16`, `int8`.
+*  <b>`name`</b>: A name for the operation (optional).
+
+##### Returns:
+
+  A `Tensor`. Has the same type as `features`.
+
+
+- - -
+
+### `tf.nn.softsign(features, name=None)` {#softsign}
+
+Computes softsign: `features / (abs(features) + 1)`.
 
 ##### Args:
 
@@ -720,7 +736,7 @@ tensor. The returned tensor has shape `shape(ids) + shape(params)[1:]`.
 
 
 *  <b>`params`</b>: A list of tensors with the same shape and type.
-*  <b>`ids`</b>: A `Tensor` with type `int32` containing the ids to be looked
+*  <b>`ids`</b>: A `Tensor` with type `int32` or `int64` containing the ids to be looked
     up in `params`.
 *  <b>`name`</b>: A name for the operation (optional).
 
@@ -850,17 +866,19 @@ with an otherwise unused class.
 ##### Args:
 
 
-*  <b>`weights`</b>: A `Tensor` of shape [num_classes, dim].  The class embeddings.
-*  <b>`biases`</b>: A `Tensor` of shape [num_classes].  The class biases.
-*  <b>`inputs`</b>: A `Tensor` of shape [batch_size, dim].  The forward
+*  <b>`weights`</b>: A `Tensor` of shape `[num_classes, dim]`, or a list of `Tensor`
+      objects whose concatenation along dimension 0 has shape
+      [num_classes, dim].  The (possibly-sharded) class embeddings.
+*  <b>`biases`</b>: A `Tensor` of shape `[num_classes]`.  The class biases.
+*  <b>`inputs`</b>: A `Tensor` of shape `[batch_size, dim]`.  The forward
       activations of the input network.
 *  <b>`labels`</b>: A `Tensor` of type `int64` and shape `[batch_size,
-    num_true]`. The target classes.
+      num_true]`. The target classes.
 *  <b>`num_sampled`</b>: An `int`.  The number of classes to randomly sample per batch.
 *  <b>`num_classes`</b>: An `int`. The number of possible classes.
 *  <b>`num_true`</b>: An `int`.  The number of target classes per training example.
-*  <b>`sampled_values`</b>: a tuple of `(sampled_candidates, true_expected_count,
-      sampled_expected_count)` returned by a `*_candidate_sampler` function.
+*  <b>`sampled_values`</b>: a tuple of (`sampled_candidates`, `true_expected_count`,
+      `sampled_expected_count`) returned by a `*_candidate_sampler` function.
       (if None, we default to `log_uniform_candidate_sampler`)
 *  <b>`remove_accidental_hits`</b>: A `bool`.  Whether to remove "accidental hits"
       where a sampled class equals one of the target classes.  If set to
@@ -873,7 +891,7 @@ with an otherwise unused class.
 
 ##### Returns:
 
-  A batch_size 1-D tensor of per-example NCE losses.
+  A `batch_size` 1-D tensor of per-example NCE losses.
 
 
 - - -
@@ -899,18 +917,20 @@ Also see Section 3 of http://arxiv.org/abs/1412.2007 for the math.
 ##### Args:
 
 
-*  <b>`weights`</b>: A `Tensor` of shape [num_classes, dim].  The class embeddings.
-*  <b>`biases`</b>: A `Tensor` of shape [num_classes].  The class biases.
-*  <b>`inputs`</b>: A `Tensor` of shape [batch_size, dim].  The forward
+*  <b>`weights`</b>: A `Tensor` of shape `[num_classes, dim]`, or a list of `Tensor`
+      objects whose concatenation along dimension 0 has shape
+      [num_classes, dim].  The (possibly-sharded) class embeddings.
+*  <b>`biases`</b>: A `Tensor` of shape `[num_classes]`.  The class biases.
+*  <b>`inputs`</b>: A `Tensor` of shape `[batch_size, dim]`.  The forward
       activations of the input network.
 *  <b>`labels`</b>: A `Tensor` of type `int64` and shape `[batch_size,
-    num_true]`. The target classes.  Note that this format differs from
-    the `labels` argument of `nn.softmax_cross_entropy_with_logits`.
+      num_true]`. The target classes.  Note that this format differs from
+      the `labels` argument of `nn.softmax_cross_entropy_with_logits`.
 *  <b>`num_sampled`</b>: An `int`.  The number of classes to randomly sample per batch.
 *  <b>`num_classes`</b>: An `int`. The number of possible classes.
 *  <b>`num_true`</b>: An `int`.  The number of target classes per training example.
-*  <b>`sampled_values`</b>: a tuple of `(sampled_candidates, true_expected_count,
-      sampled_expected_count)` returned by a `*_candidate_sampler` function.
+*  <b>`sampled_values`</b>: a tuple of (`sampled_candidates`, `true_expected_count`,
+      `sampled_expected_count`) returned by a `*_candidate_sampler` function.
       (if None, we default to `log_uniform_candidate_sampler`)
 *  <b>`remove_accidental_hits`</b>: A `bool`.  whether to remove "accidental hits"
       where a sampled class equals one of the target classes.  Default is
@@ -919,7 +939,7 @@ Also see Section 3 of http://arxiv.org/abs/1412.2007 for the math.
 
 ##### Returns:
 
-  A batch_size 1-D tensor of per-example sampled softmax losses.
+  A `batch_size` 1-D tensor of per-example sampled softmax losses.
 
 
 
@@ -1180,7 +1200,7 @@ compute them approximately.
 
 ### `tf.nn.compute_accidental_hits(true_classes, sampled_candidates, num_true, seed=None, name=None)` {#compute_accidental_hits}
 
-Compute the ids of positions in sampled_candidates matching true_classes.
+Compute the position ids in `sampled_candidates` matching `true_classes`.
 
 In Candidate Sampling, this operation facilitates virtually removing
 sampled classes which happen to match target classes.  This is done
@@ -1222,5 +1242,91 @@ target classes as noise classes for the same example.
     Values indicate positions in `sampled_candidates`.
 *  <b>`weights`</b>: A `Tensor` of type `float` and shape `[num_accidental_hits]`.
     Each value is `-FLOAT_MAX`.
+
+
+
+## Other Functions and Classes
+- - -
+
+### `tf.nn.rnn(cell, inputs, initial_state=None, dtype=None, sequence_length=None, scope=None)` {#rnn}
+
+Creates a recurrent neural network specified by RNNCell "cell".
+
+##### The simplest form of RNN network generated is:
+
+  state = cell.zero_state(...)
+  outputs = []
+  states = []
+  for input_ in inputs:
+    output, state = cell(input_, state)
+    outputs.append(output)
+    states.append(state)
+  return (outputs, states)
+
+However, a few other options are available:
+
+An initial state can be provided.
+If sequence_length is provided, dynamic calculation is performed.
+
+Dynamic calculation returns, at time t:
+  (t >= max(sequence_length)
+      ? (zeros(output_shape), zeros(state_shape))
+      : cell(input, state)
+
+Thus saving computational time when unrolling past the max sequence length.
+
+##### Args:
+
+
+*  <b>`cell`</b>: An instance of RNNCell.
+*  <b>`inputs`</b>: A length T list of inputs, each a vector with shape [batch_size].
+*  <b>`initial_state`</b>: (optional) An initial state for the RNN.  This must be
+    a tensor of appropriate type and shape [batch_size x cell.state_size].
+*  <b>`dtype`</b>: (optional) The data type for the initial state.  Required if
+    initial_state is not provided.
+*  <b>`sequence_length`</b>: An int64 vector (tensor) size [batch_size].
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+
+##### Returns:
+
+  A pair (outputs, states) where:
+    outputs is a length T list of outputs (one for each input)
+    states is a length T list of states (one state following each input)
+
+##### Raises:
+
+
+*  <b>`TypeError`</b>: If "cell" is not an instance of RNNCell.
+*  <b>`ValueError`</b>: If inputs is None or an empty list.
+
+
+- - -
+
+### `tf.nn.state_saving_rnn(cell, inputs, state_saver, state_name, sequence_length=None, scope=None)` {#state_saving_rnn}
+
+RNN that accepts a state saver for time-truncated RNN calculation.
+
+##### Args:
+
+
+*  <b>`cell`</b>: An instance of RNNCell.
+*  <b>`inputs`</b>: A length T list of inputs, each a vector with shape [batch_size].
+*  <b>`state_saver`</b>: A state saver object with methods `state` and `save_state`.
+*  <b>`state_name`</b>: The name to use with the state_saver.
+*  <b>`sequence_length`</b>: (optional) An int64 vector (tensor) size [batch_size].
+    See the documentation for rnn() for more details about sequence_length.
+*  <b>`scope`</b>: VariableScope for the created subgraph; defaults to "RNN".
+
+##### Returns:
+
+  A pair (outputs, states) where:
+    outputs is a length T list of outputs (one for each input)
+    states is a length T list of states (one state following each input)
+
+##### Raises:
+
+
+*  <b>`TypeError`</b>: If "cell" is not an instance of RNNCell.
+*  <b>`ValueError`</b>: If inputs is None or an empty list.
 
 

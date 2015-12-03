@@ -24,8 +24,6 @@ import tensorflow.python.platform
 import numpy as np
 import tensorflow as tf
 
-from tensorflow.python.kernel_tests.gradient_checker import ComputeGradient
-
 
 class TransposeTest(tf.test.TestCase):
 
@@ -48,10 +46,10 @@ class TransposeTest(tf.test.TestCase):
       xs = list(np.shape(x))
       ys = list(np.shape(tf_ans))
       if x.dtype == np.float32:
-        jacob_t, jacob_n = ComputeGradient(inx, xs, y, ys, x, 1e-2)
+        jacob_t, jacob_n = tf.test.compute_gradient(inx, xs, y, ys, x, 1e-2)
         self.assertAllClose(jacob_t, jacob_n, 1e-3, 1e-3)
       elif x.dtype == np.float64:
-        jacob_t, jacob_n = ComputeGradient(inx, xs, y, ys, x, 1e-2)
+        jacob_t, jacob_n = tf.test.compute_gradient(inx, xs, y, ys, x, 1e-2)
         self.assertAllClose(jacob_t, jacob_n, 1e-6, 1e-6)
 
       return tf_ans, jacob_t
@@ -70,10 +68,10 @@ class TransposeTest(tf.test.TestCase):
       xs = list(np.shape(x))
       ys = list(np.shape(tf_ans))
       if x.dtype == np.float32:
-        jacob_t, jacob_n = ComputeGradient(inx, xs, y, ys, x, 1e-2)
+        jacob_t, jacob_n = tf.test.compute_gradient(inx, xs, y, ys, x, 1e-2)
         self.assertAllClose(jacob_t, jacob_n, 1e-3, 1e-3)
       elif x.dtype == np.float64:
-        jacob_t, jacob_n = ComputeGradient(inx, xs, y, ys, x, 1e-2)
+        jacob_t, jacob_n = tf.test.compute_gradient(inx, xs, y, ys, x, 1e-2)
         self.assertAllClose(jacob_t, jacob_n, 1e-6, 1e-6)
 
       return tf_ans, jacob_t
@@ -183,7 +181,7 @@ class TransposeTest(tf.test.TestCase):
     with self.assertRaises(ValueError):
       tf.transpose(np.arange(0., 30).reshape([2, 3, 5]), [[0, 1], [2, 3]])
     self._testError(np.arange(0., 2 ** 10).reshape([2] * 10),
-                    range(10),
+                    np.arange(10),
                     "not implemented")
     with self.assertRaises(IndexError):
       tf.transpose(np.arange(0., 30).reshape([2, 3, 5]), [0, 1, 3])

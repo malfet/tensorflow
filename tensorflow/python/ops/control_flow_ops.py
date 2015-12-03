@@ -69,14 +69,15 @@ from __future__ import print_function
 
 import six
 from six.moves import xrange  # pylint: disable=redefined-builtin
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
-from tensorflow.python.framework import types
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import common_shapes
 from tensorflow.python.ops import constant_op
-from tensorflow.python.ops import gen_control_flow_ops
 from tensorflow.python.ops import gen_array_ops
+from tensorflow.python.ops import gen_control_flow_ops
+from tensorflow.python.ops import gen_data_flow_ops
 from tensorflow.python.ops import logging_ops
 from tensorflow.python.ops import math_ops
 # pylint: disable=wildcard-import,undefined-variable
@@ -248,7 +249,7 @@ def _SwitchRefOrTensor(data, pred, name="Switch"):
   Raises:
     TypeError: if data is not a Tensor or IndexedSlices
   """
-  data = ops.convert_to_tensor_or_indexed_slices(data, name="data")
+  data = ops.convert_to_tensor_or_indexed_slices(data, name="data", as_ref=True)
   if isinstance(data, ops.Tensor):
     if not data.dtype.is_ref_dtype:
       return switch(data, pred, name=name)
@@ -418,8 +419,9 @@ def _GetRealValue(value):
   Returns:
     The same tensor value from the saved history.
   """
-  real_value = value
+  # pylint: disable=protected-access
   forward_ctxt = value.op._get_control_flow_context()
+  # pylint: enable=protected-access
   real_value = forward_ctxt.history_map.get(value.name)
   assert value.op.type != "Variable"
   if real_value is None:
@@ -432,29 +434,11 @@ def _GetRealValue(value):
       # to deepcopy the constants for the grad while context.
       history_value = forward_ctxt.AddForwardAccumulateLoop(value)
 
-      # The shapes of the whole history and a single event element.
-      forward_ctxt.grad_context.Exit()
-      elem_rank = array_ops.rank(history_value) - 1
-      elem_rank_vec = array_ops.expand_dims(elem_rank, 0)
-      elem_shape = array_ops.slice(array_ops.shape(history_value), [1],
-                                   elem_rank_vec)
-      slice_shape = array_ops.concat(0, [[1], elem_shape])
-      forward_ctxt.grad_context.Enter()
-
-      # The begin position of the slice at slice_index.
-      slice_index = forward_ctxt.grad_context.index
-      b1 = array_ops.zeros(elem_rank_vec, dtype=types.int32)
-      b = array_ops.concat(0, [array_ops.expand_dims(slice_index, 0), b1])
-
-      # The slice at slice_index.
-      # TODO(irving): Replace with gather once that's GPU accelerated
-      real_value = array_ops.squeeze(
-          array_ops.slice(history_value,
-                          b,
-                          slice_shape,
-                          name="real"),
-          squeeze_dims=[0])
-  forward_ctxt.history_map[value.name] = real_value
+      # pylint: disable=protected-access
+      real_value = gen_data_flow_ops._stack_pop(history_value,
+                                                value.dtype.base_dtype)
+      # pylint: enable=protected-access
+    forward_ctxt.history_map[value.name] = real_value
   return real_value
 
 
@@ -656,7 +640,7 @@ def cond(pred, fn1, fn2, name=None):
     context_f = CondContext(pred, pivot_2, 0)
     context_f.Enter()
     res_f = context_f.BuildCondBranch(fn2)
-    context_t.ExitResult(res_f)
+    context_f.ExitResult(res_f)
     context_f.Exit()
 
     # Add the final merge to the graph.
@@ -693,8 +677,10 @@ class WhileContext(ControlFlowContext):
     # generation for gradient computation
     self._pivot = None
 
-    # The tensors for the counters added by AddForwardCounterLoop or
-    # AddBackPropCounterLoop
+    # The loop counter added either by AddForwardCounterLoop or
+    # AddBackPropCounterLoop. For forward, it is the value of the loop
+    # counter for the next iteration. For backprop, it is the value of
+    # the loop counter for the current iteration.
     self._index = None
 
     # Information needed by backprop
@@ -703,10 +689,10 @@ class WhileContext(ControlFlowContext):
     self._history_map = {}
     self._switch_map = {}
 
-    # values considered to have been already seen in this context
+    # Values considered to have been already seen in this context
     self._values = set()
 
-    # values referenced by but external to this context
+    # Values referenced by but external to this context
     self._external_values = {}
 
   @property
@@ -841,10 +827,9 @@ class WhileContext(ControlFlowContext):
                      name="f_count")
     merge_n = merge([enter_n, enter_n])[0]
     switch_n = switch(merge_n, self._pivot)
-    self._index = switch_n[1]
 
-    add_n = math_ops.add(self._index, 1)
-    next_n = next_iteration(add_n)
+    self._index = math_ops.add(switch_n[1], 1)
+    next_n = next_iteration(self._index)
     merge_n.op._update_input(1, next_n)
 
     self._total_iterations = exit(switch_n[0], name="f_count")
@@ -859,54 +844,39 @@ class WhileContext(ControlFlowContext):
 
     The pseudocode is:
     ```
-      acc;
+      acc = stack();
       while (_pivot) {
-        if (index == 0) [value] else Concat(acc, [value]);
+        acc = stack_push(acc, value);
       }
     ```
 
     Args:
-      value: The tensor that is accumulated.
+      value: The tensor that is to be accumulated.
 
     Returns:
-      The accumulated history of value.
+      The stack that contains the accumulated history of value.
 
     Raises:
       ValueError: If the shape of "value" is not known statically.
     """
-    if not value.get_shape().is_fully_defined():
-      raise ValueError("Must have known shape: %s" % value)
     self._grad_context.Exit()
-    # TODO(irving): Now that acc starts out empty, most of the
-    # conditional logic can go away.
-    acc = constant_op.constant([],
-                               value.dtype,
-                               shape=[0] + value.get_shape().as_list(),
-                               name="f_acc")
+    # pylint: disable=protected-access
+    acc = gen_data_flow_ops._stack(value.dtype.base_dtype, name="f_acc")
+    # pylint: enable=protected-access
     self.Enter()
     self.AddName(acc.name)
-    enter_acc = _Enter(acc, self._name, is_constant=False,
+    enter_acc = _Enter(acc, self._name, is_constant=True,
                        parallel_iterations=self._parallel_iterations,
                        name="f_acc")
-    merge_acc = merge([enter_acc, enter_acc])[0]
-    switch_acc = switch(merge_acc, self._pivot)
 
-    # If index = 0 then [value] else Concat(acc, [value]).
-    cond = math_ops.greater(self._index, 0)
-    switch_add_acc = switch(switch_acc[1], cond)
-    expand_value = array_ops.expand_dims(value, 0)
-    true_branch = array_ops.concat(0, [switch_add_acc[1], expand_value])
-    false_branch = array_ops.identity(switch_add_acc[0])
-    false_branch = with_dependencies([false_branch], expand_value)
-    add_acc = merge([false_branch, true_branch])[0]
+    # pylint: disable=protected-access
+    push_op = gen_data_flow_ops._stack_push(enter_acc, value)
+    self._index.op._add_control_input(push_op.op)
+    # pylint: enable=protected-access
 
-    next_acc = next_iteration(add_acc)
-    merge_acc.op._update_input(1, next_acc)
-
-    exit_acc = exit(switch_acc[0], name="f_acc")
     self.Exit()
     self._grad_context.Enter()
-    return exit_acc
+    return acc
 
   def AddForwardAccumulateCondLoop(self, value):
     """Add an accumulation loop for each conditional switch.
@@ -916,9 +886,9 @@ class WhileContext(ControlFlowContext):
 
     The pseudocode is:
       ```
-      acc;
+      acc = []
       while (_pivot) {
-        Concat(acc, value);
+        acc = concat([acc, value]);
       }
       ```
 
@@ -929,19 +899,19 @@ class WhileContext(ControlFlowContext):
       The accumulated history of value.
     """
     self._grad_context.Exit()
-    acc = constant_op.constant(False, name="f_acc")
+    acc = constant_op.constant(False, name="f_cond")
     self.Enter()
     self.AddName(acc.name)
     enter_acc = _Enter(acc, self._name, is_constant=False,
                        parallel_iterations=self._parallel_iterations,
-                       name="f_acc")
+                       name="f_cond")
     merge_acc = merge([enter_acc, enter_acc])[0]
     switch_acc = switch(merge_acc, self._pivot)
     acc = array_ops.concat(0, [switch_add_acc[1], value])
     next_acc = next_iteration(acc)
     merge_acc.op._update_input(1, next_acc)
 
-    exit_acc = exit(switch_acc[0], name="f_acc")
+    exit_acc = exit(switch_acc[0], name="f_cond")
     self.Exit()
     self._grad_context.Enter()
     return exit_acc
@@ -974,11 +944,10 @@ class WhileContext(ControlFlowContext):
     self._pivot = loop_cond(cond, name="b_count")
     switch_count = switch(merge_count, self._pivot)
 
-    # Add next_iteration right after Switch to match the gradient function.
-    next_count = next_iteration(switch_count[1])
-    self._pivot_for_body = next_count
-    self._index = math_ops.sub(next_count, one)
-    merge_count.op._update_input(1, self._index)
+    self._index = math_ops.sub(switch_count[1], one)
+    self._pivot_for_body = self._index
+    next_count = next_iteration(self._index)
+    merge_count.op._update_input(1, next_count)
 
     exit_count = exit(switch_count[0], name="b_count")
     self.Exit()
@@ -1015,9 +984,9 @@ class WhileContext(ControlFlowContext):
     merge_acc = merge([enter_acc, enter_acc], name="b_acc")[0]
     switch_acc = switch(merge_acc, self._pivot)
 
-    next_acc = next_iteration(switch_acc[1])
-    add_acc = math_ops.add(next_acc, value)
-    merge_acc.op._update_input(1, add_acc)
+    add_acc = math_ops.add(switch_acc[1], value)
+    next_acc = next_iteration(add_acc)
+    merge_acc.op._update_input(1, next_acc)
 
     exit_acc = exit(switch_acc[0], name="b_acc")
     return exit_acc
@@ -1134,7 +1103,7 @@ def _AsTensorList(x, p):
   Returns:
     A list of Tensors or IndexedSlices.
   """
-  if not isinstance(x, list) and not isinstance(x, _basetuple):
+  if not isinstance(x, (list, _basetuple)):
     x = [x]
 
   l = []
@@ -1249,7 +1218,10 @@ def group(*inputs, **kwargs):
     # 2-level tree. The root node is the returned NoOp node.
     # deps contains 1 NoOp node for each device.
     deps = []
-    for dev in sorted(six.iterkeys(ops_on_device)):
+    def device_key(dev):
+      """A sort key that allows None to be compared to strings."""
+      return "" if dev is None else dev
+    for dev in sorted(six.iterkeys(ops_on_device), key=device_key):
       deps.append(_GroupControlDeps(dev, ops_on_device[dev]))
     return _GroupControlDeps(None, deps, name=name)
 
@@ -1332,7 +1304,7 @@ def fold(fn, elems, elem_shape, name=None):
     d0 = elem_shape[0]
     n = math_ops.div(s0, d0)
     b1 = array_ops.zeros(array_ops.expand_dims(array_ops.rank(elems) - 1, 0),
-                         dtype=types.int32)
+                         dtype=dtypes.int32)
     # Initialize the output with slice 0
     b = array_ops.concat(0, [[0], b1])
     o = array_ops.slice(elems, b, elem_shape)
@@ -1374,7 +1346,7 @@ def case(pred_fn_pairs, default, exclusive=False, name="case"):
 
     Expressions:
     ```
-      f1 = lambda: tf.onstant(17)
+      f1 = lambda: tf.constant(17)
       f2 = lambda: tf.constant(23)
       r = case([(tf.less(x, y), f1)], default=f2)
     ```
@@ -1428,7 +1400,7 @@ def case(pred_fn_pairs, default, exclusive=False, name="case"):
     if not isinstance(tup, _basetuple) or len(tup) != 2:
       raise TypeError("Each entry in pred_fn_pairs must be a 2-tuple")
     pred, fn = tup
-    if pred.dtype != types.bool:
+    if pred.dtype != dtypes.bool:
       raise TypeError("pred must be of type bool: %s", pred.name)
     if not callable(fn):
       raise TypeError("fn for pred %s must be callable." % pred.name)
@@ -1468,7 +1440,7 @@ def case(pred_fn_pairs, default, exclusive=False, name="case"):
       # TODO(ebrevdo): Add Where() for DT_BOOL, replace with Size(Where(preds))
       preds_c = array_ops.concat(0, preds, name="preds_c")
       num_true_conditions = math_ops.reduce_sum(
-          math_ops.cast(preds_c, types.int32), name="num_true_conds")
+          math_ops.cast(preds_c, dtypes.int32), name="num_true_conds")
       at_most_one_true_condition = math_ops.less(
           num_true_conditions, constant_op.constant(2, name="two_true_conds"))
 

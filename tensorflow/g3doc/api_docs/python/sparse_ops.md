@@ -43,23 +43,23 @@ dense[tuple(indices[i])] = values[i]
 ```
 
 By convention, `indices` should be sorted in row-major order (or equivalently
-lexigraphic order on the tuples `indices[i]`).  This is not enforced when
-`SparseTensor` objects are constructed, but most Ops assume correct ordering.
+lexicographic order on the tuples `indices[i]`).  This is not enforced when
+`SparseTensor` objects are constructed, but most ops assume correct ordering.
 If the ordering is wrong, it can be fixed by calling `sparse_reorder` on the
 misordered `SparseTensor`.
 
 Example: The sparse tensor
 
 ```python
-  SparseTensor(values=[1, 2], indices=[[0, 0], [1, 2]], shape=[3, 4])
+SparseTensor(values=[1, 2], indices=[[0, 0], [1, 2]], shape=[3, 4])
 ```
 
 represents the dense tensor
 
 ```python
-  [[1, 0, 0, 0]
-   [0, 0, 2, 0]
-   [0, 0, 0, 0]]
+[[1, 0, 0, 0]
+ [0, 0, 2, 0]
+ [0, 0, 0, 0]]
 ```
 
 - - -
@@ -73,7 +73,7 @@ Creates a `SparseTensor`.
 
 *  <b>`indices`</b>: A 2-D int64 tensor of shape `[N, ndims]`.
 *  <b>`values`</b>: A 1-D tensor of any type and shape `[N]`.
-*  <b>`dense_shape`</b>: A 1-D int64 tensor of shape `[ndims]`.
+*  <b>`shape`</b>: A 1-D int64 tensor of shape `[ndims]`.
 
 ##### Returns:
 
@@ -91,6 +91,7 @@ The indices of non-zero values in the represented dense tensor.
   A 2-D Tensor of int64 with shape `[N, ndims]`, where `N` is the
     number of non-zero values in the tensor, and `ndims` is the rank.
 
+
 - - -
 
 #### `tf.SparseTensor.values` {#SparseTensor.values}
@@ -101,11 +102,13 @@ The non-zero values in the represented dense tensor.
 
   A 1-D Tensor of any data type.
 
+
 - - -
 
 #### `tf.SparseTensor.dtype` {#SparseTensor.dtype}
 
 The `DType` of elements in this tensor.
+
 
 - - -
 
@@ -113,11 +116,13 @@ The `DType` of elements in this tensor.
 
 A 1-D Tensor of int64 representing the shape of the dense tensor.
 
+
 - - -
 
 #### `tf.SparseTensor.graph` {#SparseTensor.graph}
 
 The `Graph` that contains the index, value, and shape tensors.
+
 
 
 - - -
@@ -131,17 +136,20 @@ SparseTensorValue(indices, values, shape)
 
 Alias for field number 0
 
+
 - - -
 
 #### `tf.SparseTensorValue.shape` {#SparseTensorValue.shape}
 
 Alias for field number 2
 
+
 - - -
 
 #### `tf.SparseTensorValue.values` {#SparseTensorValue.values}
 
 Alias for field number 1
+
 
 
 
@@ -363,7 +371,7 @@ is during manual manipulation of the indices and values to add entries.
 
 Reordering does not affect the shape of the `SparseTensor`.
 
-For example, if sp_input has shape `[4, 5]` and `indices` / `values`:
+For example, if `sp_input` has shape `[4, 5]` and `indices` / `values`:
 
     [0, 3]: b
     [0, 1]: a

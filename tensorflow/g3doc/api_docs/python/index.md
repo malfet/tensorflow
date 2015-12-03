@@ -194,6 +194,7 @@
 * **[Images](../../api_docs/python/image.md)**:
   * [`adjust_brightness`](../../api_docs/python/image.md#adjust_brightness)
   * [`adjust_contrast`](../../api_docs/python/image.md#adjust_contrast)
+  * [`convert_image_dtype`](../../api_docs/python/image.md#convert_image_dtype)
   * [`crop_to_bounding_box`](../../api_docs/python/image.md#crop_to_bounding_box)
   * [`decode_jpeg`](../../api_docs/python/image.md#decode_jpeg)
   * [`decode_png`](../../api_docs/python/image.md#decode_png)
@@ -215,6 +216,7 @@
   * [`resize_image_with_crop_or_pad`](../../api_docs/python/image.md#resize_image_with_crop_or_pad)
   * [`resize_images`](../../api_docs/python/image.md#resize_images)
   * [`resize_nearest_neighbor`](../../api_docs/python/image.md#resize_nearest_neighbor)
+  * [`resize_nearest_neighbor_grad`](../../api_docs/python/image.md#resize_nearest_neighbor_grad)
   * [`transpose_image`](../../api_docs/python/image.md#transpose_image)
 
 * **[Sparse Tensors](../../api_docs/python/sparse_ops.md)**:
@@ -282,6 +284,7 @@
   * [`nce_loss`](../../api_docs/python/nn.md#nce_loss)
   * [`relu`](../../api_docs/python/nn.md#relu)
   * [`relu6`](../../api_docs/python/nn.md#relu6)
+  * [`rnn`](../../api_docs/python/nn.md#rnn)
   * [`sampled_softmax_loss`](../../api_docs/python/nn.md#sampled_softmax_loss)
   * [`separable_conv2d`](../../api_docs/python/nn.md#separable_conv2d)
   * [`sigmoid`](../../api_docs/python/nn.md#sigmoid)
@@ -289,6 +292,8 @@
   * [`softmax`](../../api_docs/python/nn.md#softmax)
   * [`softmax_cross_entropy_with_logits`](../../api_docs/python/nn.md#softmax_cross_entropy_with_logits)
   * [`softplus`](../../api_docs/python/nn.md#softplus)
+  * [`softsign`](../../api_docs/python/nn.md#softsign)
+  * [`state_saving_rnn`](../../api_docs/python/nn.md#state_saving_rnn)
   * [`tanh`](../../api_docs/python/nn.md#tanh)
   * [`top_k`](../../api_docs/python/nn.md#top_k)
   * [`uniform_candidate_sampler`](../../api_docs/python/nn.md#uniform_candidate_sampler)

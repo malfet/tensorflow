@@ -25,7 +25,8 @@ are all of variable size.  If you need fixed size images, pass the output of
 the decode Ops to one of the cropping and resizing Ops.
 
 Note: The PNG encode and decode Ops support RGBA, but the conversions Ops
-presently only support RGB, HSV, and GrayScale.
+presently only support RGB, HSV, and GrayScale. Presently, the alpha channel has
+to be stripped from the image and re-attached using slicing ops.
 
 @@decode_jpeg
 @@encode_jpeg
@@ -55,10 +56,6 @@ image = tf.image.decode_jpeg(...)
 resized_image = tf.image.resize_bilinear(image, [299, 299])
 ```
 
-<i>Maybe refer to the Queue examples that show how to add images to a Queue
-after resizing them to a fixed size, and how to dequeue batches of resized
-images from the Queue.</i>
-
 @@resize_images
 
 @@resize_area
@@ -86,6 +83,14 @@ images from the Queue.</i>
 
 @@transpose_image
 
+## Converting Between Colorspaces.
+
+Internally, images are either stored in as one `float32` per channel per pixel
+(implicitly, values are assumed to lie in `[0,1)`) or one `uint8` per channel
+per pixel (values are assumed to lie in `[0,255]`).
+
+@@convert_image_dtype
+
 ## Image Adjustments
 
 TensorFlow provides functions to adjust images in various ways: brightness,
@@ -109,11 +114,11 @@ import math
 
 import tensorflow.python.platform
 
+from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import random_seed
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_util
-from tensorflow.python.framework import types
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import clip_ops
 from tensorflow.python.ops import common_shapes
@@ -354,7 +359,7 @@ def crop_to_bounding_box(image, offset_height, offset_width, target_height,
   This op cuts a rectangular part out of `image`. The top-left corner of the
   returned image is at `offset_height, offset_width` in `image`, and its
   lower-right corner is at
-  `offset_height + target_height, offset_width + target_width'.
+  `offset_height + target_height, offset_width + target_width`.
 
   Args:
     image: 3-D tensor with shape `[height, width, channels]`
@@ -554,7 +559,7 @@ def per_image_whitening(image):
   height, width, depth = _ImageDimensions(image)
   num_pixels = height * width * depth
 
-  image = math_ops.cast(image, dtype=types.float32)
+  image = math_ops.cast(image, dtype=dtypes.float32)
   image_mean = math_ops.reduce_mean(image)
 
   variance = (math_ops.reduce_mean(math_ops.square(image)) -
@@ -592,7 +597,7 @@ def random_brightness(image, max_delta, seed=None):
     3-D tensor of images of shape `[height, width, channels]`
 
   Raises:
-    ValueError: if max_delta is negative.
+    ValueError: if `max_delta` is negative.
   """
   _Check3DImage(image)
 
@@ -664,8 +669,8 @@ def adjust_brightness(image, delta, min_value=None, max_value=None):
   with ops.op_scope([image, delta, min_value, max_value], None,
                     'adjust_brightness') as name:
     adjusted = math_ops.add(
-        math_ops.cast(image, types.float32),
-        math_ops.cast(delta, types.float32),
+        math_ops.cast(image, dtypes.float32),
+        math_ops.cast(delta, dtypes.float32),
         name=name)
     if image.dtype.is_integer:
       rounded = math_ops.round(adjusted)
@@ -809,3 +814,64 @@ def random_crop(image, size, seed=None, name=None):
   seed1, seed2 = random_seed.get_seed(seed)
   return gen_image_ops.random_crop(image, size, seed=seed1, seed2=seed2,
                                    name=name)
+
+
+def convert_image_dtype(image, dtype, name=None):
+  """Convert `image` to `dtype`, scaling its values if needed.
+
+  Images that are represented using floating point values are expected to have
+  values in the range [0,1). Image data stored in integer data types are
+  expected to have values in the range `[0,MAX]`, wbere `MAX` is the largest
+  positive representable number for the data type.
+
+  This op converts between data types, scaling the values appropriately before
+  casting.
+
+  Note that for floating point inputs, this op expects values to lie in [0,1).
+  Conversion of an image containing values outside that range may lead to
+  overflow errors when converted to integer `Dtype`s.
+
+  Args:
+    image: An image.
+    dtype: A `DType` to convert `image` to.
+    name: A name for this operation (optional).
+
+  Returns:
+    `image`, converted to `dtype`.
+  """
+
+  if dtype == image.dtype:
+    return image
+
+  with ops.op_scope([image], name, 'convert_image') as name:
+    # Both integer: use integer multiplication in the larger range
+    if image.dtype.is_integer and dtype.is_integer:
+      scale_in = image.dtype.max
+      scale_out = dtype.max
+      if scale_in > scale_out:
+        # Scaling down, scale first, then cast. The scaling factor will
+        # cause in.max to be mapped to above out.max but below out.max+1,
+        # so that the output is safely in the supported range.
+        scale = (scale_in + 1) // (scale_out + 1)
+        scaled = math_ops.div(image, scale)
+        return math_ops.cast(scaled, dtype)
+      else:
+        # Scaling up, cast first, then scale. The scale will not map in.max to
+        # out.max, but converting back and forth should result in no change.
+        cast = math_ops.cast(image, dtype)
+        scale = (scale_out + 1) // (scale_in + 1)
+        return math_ops.mul(cast, scale)
+    elif image.dtype.is_floating and dtype.is_floating:
+      # Both float: Just cast, no possible overflows in the allowed ranges.
+      return math_ops.cast(image, dtype)
+    else:
+      if image.dtype.is_integer:
+        # Converting to float: first cast, then scale
+        cast = math_ops.cast(image, dtype)
+        scale = 1. / image.dtype.max
+        return math_ops.mul(cast, scale)
+      else:
+        # Converting from float: first scale, then cast
+        scale = dtype.max + 0.5  # avoid rounding problems in the cast
+        scaled = math_ops.mul(image, scale)
+        return math_ops.cast(scaled, dtype)
